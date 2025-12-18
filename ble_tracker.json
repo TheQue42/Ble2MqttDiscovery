@@ -1,0 +1,20 @@
+{
+    "mqtt_host" : "10.10.10.1",
+    "log_level" : 1,
+    "mqtt_port" : 8883,
+    "mqtt_tls" : true,
+    "ca_cert" : "/etc/ssl/ca-bundle.pem",
+    "mqtt_user" : "arneanka",
+    "mqtt_pass" : "ReallyQuiteSuperComplicated",
+    "uuids" : {
+      "6fa459ea-ee8a-3ca4-894e-db77e160355e" : {
+          "name" : "Telefon nr 1"
+      },
+      "6fa459ea-ee8a-3ca4-894e-db77e160355e" : {
+          "name" : "Telefon nr 2"
+      },
+      "6fa459ea-ee8a-3ca4-894e-db77e160355e" : {
+          "name" : "Telefon nr 3"
+      }
+    }
+}

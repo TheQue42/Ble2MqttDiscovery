@@ -1,0 +1,13 @@
+[Unit]
+Description=Python BleTracker MQTT
+After=multi-user.target
+
+[Service]
+Type=simple
+#Restart=always
+Restart=on-failure
+ExecStart=/root/py3/bin/python3 -u /root/bin/ble_mqtt.py -f /etc/ble_tracker.json
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
