@@ -44,23 +44,24 @@ LastPublishTime = None
 Devices = None
 mqttClient = mqtt.Client
 LogFileHandle = None # Not Impl
+Cfg = { "log_level" : 0 }  # Before config is read, so logPrint works
 
 def validateConfiguration():
     global Cfg, Devices
-    
+
     Mandatory_Parameters = [ "mqtt_host", "uuids" ]
     for param in Mandatory_Parameters:
         if not param in Cfg:
-            logPrint(0, 
+            logPrint(0,
             f"Missing config parameter: {param} in json configuration file")
             logPrint(0, f"Dump: {json.dumps(Cfg)}")
             return -1
-    
+
     if not isinstance(Cfg["uuids"], dict):
         logPrint(0, f"Error: The key [uuids] must be a dict()!")
         logPrint(0, f'Example: {{ "uuid" {"name": "Friendly_Name"} }}')
         return -1
-    
+
     OptionalParams = {
         "log_level" : 0,
         "mqtt_port" : 1883,
@@ -74,24 +75,24 @@ def validateConfiguration():
         "scanDelay" : 15,
         "reduceTimers" : 1,
         "ca_cert": "/etc/ssl/certs/ca-certificates.crt"
-    }    
+    }
 
     for opt in OptionalParams:
         if not opt in Cfg:
             Cfg[opt] = OptionalParams[opt]
         logPrint(3, f"Optional value {opt} set to {Cfg[opt]}")
-        
+
     Cfg["BaseDevTrackTopic"] = "homeassistant/device_tracker/"
     Cfg["NodeName"] = socket.gethostname().split('.')[0]
     Cfg["BleTrackerTopic"] = Cfg["BaseDevTrackTopic"] + "BleTracker/" + Cfg["NodeName"] + "/state"
     Cfg["BleTrackerSyncTopic"] = Cfg["BaseDevTrackTopic"] + "BleTracker/sync"
-    
+
     Devices = Cfg["uuids"]  # Quick access
     Cfg["awayTimeout"] = Cfg["publishInterval"] / Cfg["reduceTimers"]
     Cfg["publishInterval"] = Cfg["publishInterval"] / Cfg["reduceTimers"]
-    
+
 def readConfig(fileName: str) -> str:
-    
+
     if len(fileName) == 0 or not Path(fileName).is_file():
         logPrint(0, "Not a valid filename", fileName)
         return ""
@@ -112,9 +113,9 @@ def readConfig(fileName: str) -> str:
 def lastPublishTime(lastTime : datetime):
     """
     Should ensure we dont publish too often.
-    
+
     ### TQ-TODO: Need to keep track of publish-time per device
-    
+
     """
     now = datetime.now()
     secondsSinceLast = (now - lastTime).total_seconds()
@@ -123,6 +124,9 @@ def lastPublishTime(lastTime : datetime):
 
 
 def logPrint(level, *args, **kwargs):
+    """Centralize log-output, until we get a real logging API"""
+    global Cfg
+    
     LogLevel = Cfg["log_level"]
     if LogFileHandle is not None and level <= LogLevel:
         print(*args, file=LogFileHandle, **kwargs)
@@ -140,22 +144,31 @@ def PublishDeviceAvailability(forcePublish: bool = False):
         After {Cfg["awayTimeout"]} sec, mobile is published as "not_home"
 
     """
+    global Cfg
+    
+    logPrint(3, f'\nPublishLoop: DeviceCount: {len(Cfg["uuids"])}')
+    for devItem in Cfg["uuids"].values():
+        logPrint(3, f'- Name: {devItem["myId"]:<25} - [{devItem["state"]:^8}] @ {devItem["presence"]["location"]}')
+    else:
+        logPrint(3,"")
     minPublishInterval = Cfg["publishInterval"]
-    for device in Devices.keys():
-        devItem = Devices[device]
+    for devItem in Cfg["uuids"].values():
         last_seen = devItem["last_seen"]
         last_published = devItem["last_published"]
         now = datetime.now()
         deviceAway = ( now - last_seen > timedelta(seconds=Cfg["awayTimeout"]) )
-        
-        devName = devItem["name"]
+
+        devName = devItem["myId"]
         logPrint(4, f"\nPublish-DEBUG: {json.dumps(devItem, indent=2, default=str)}\n")
 
         # Is the device managed by us?
         currentOwner = devItem["presence"]["location"]
         takeOwnerShip = False
-        if currentOwner != Cfg["NodeName"] and currentOwner is not None and not deviceAway:
-            logPrint(2, f'[{devName}] managed by [{currentOwner}]')
+        if currentOwner != Cfg["NodeName"] and currentOwner is not None:
+            
+            if deviceAway :
+                logPrint(3, f'[{devName}] managed by [{currentOwner}], and we havent seen it. Lets not touch.')
+                return
 
             remoteRssi = devItem["presence"]["rssi"]
             ourRssi = devItem["rssi"]
@@ -174,10 +187,10 @@ def PublishDeviceAvailability(forcePublish: bool = False):
                 else:
                     return
         elif currentOwner is None and not deviceAway:
-            logPrint(0, f'Taking ownership of [{devName}], No Master.')
+            logPrint(0, f'TAKING OWNERSHIP of [{devName}], No Master.')
             takeOwnerShip = True
-
-        devName = devItem["name"]
+        
+        
         if deviceAway:
             if devItem["state"] == "home":
                 logPrint(0, f'\n{devName} ==> Away! LastSeen: [{last_seen}]')
@@ -191,11 +204,13 @@ def PublishDeviceAvailability(forcePublish: bool = False):
                 devItem["state"] = "home"
             timeToPublish = (now - last_published > timedelta(seconds=minPublishInterval))
 
+        logPrint(3, f'CHECK: {devName}, deviceAway:{deviceAway}, Own:{currentOwner}, TTP: {timeToPublish}, takeOw: {takeOwnerShip}, \nPresence:{devItem["presence"]}\n')
+        
         # Publish DeviceTracker State?
         rssiIfHome = "" if deviceAway else ":" + f'{devItem["rssi"]}'
         if timeToPublish or takeOwnerShip or (forcePublish and not deviceAway):
             fp = "Forced" if forcePublish else ""
-            
+
             logPrint(1, f'{fp}Publish - [{devName}] - State: [{devItem["state"]}{rssiIfHome}] - dSec: {lastPublishTime(last_published)}')
             devItem["last_published"] = now
             publishDevice(devItem, takeOwnerShip)
@@ -211,13 +226,13 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
         Publish a single client state and presence info
     """
     global Cfg, mqttClient
-    
+
     props = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
     props.MessageExpiryInterval = int(Cfg["publishInterval"] * 3)
-    
+
     deviceTopic = Cfg["BaseDevTrackTopic"] + devItem["myId"]
     devState = devItem["state"]
-    
+
     # Always publish away/home state
     mqttClient.publish(deviceTopic + "/state", devState, qos=1, retain=True, properties=props)
 
@@ -226,6 +241,7 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
         mqttPayload["location"] = Cfg["NodeName"]
         mqttPayload["rssi"] = devItem["rssi"]
         mqttPayload["lastUpdate"] = datetime.now().timestamp()
+        mqttPayload["nodeVersion"] = ScriptVersion
         lastSeenSeconds = round( (datetime.now() - devItem["last_seen"] ).total_seconds(), 0 )
         mqttPayload["last_seen"] = lastSeenSeconds
         devItem["presence"] = mqttPayload
@@ -233,8 +249,8 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
     attributes = dict()
     attributes["rssi"] = devItem["rssi"]
     attributes["owner"] = mqttPayload["location"]
-    mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)    
-    mqttClient.publish(deviceTopic + "/presence", json.dumps(mqttPayload), qos=1, retain=True, properties=props)    
+    mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
+    mqttClient.publish(deviceTopic + "/presence", json.dumps(mqttPayload), qos=1, retain=True, properties=props)
 
 
 def mqtt_on_message(client, userdata, msg):
@@ -261,7 +277,7 @@ def mqtt_on_message(client, userdata, msg):
                 logPrint(2,f'Device-list: [{Cfg["uuids"]}]')
             else:
                 if jsonData["location"] is None:
-                    # Someone reported device away, 
+                    # Someone reported device away,
                     # and we've got eyes on the device
                     if devItem["state"] == "home":
                         logPrint(0, f'\nBetter data: Update! {deviceName}:{devItem["state"]}, Json:{jsonData}, Our:{devItem["rssi"]}')
@@ -272,7 +288,7 @@ def mqtt_on_message(client, userdata, msg):
                     else:
                         logPrint(0, f'\nNew master for ({deviceName}): [{jsonData["location"]}] / RSSI: {jsonData["rssi"]}')
                     devItem["presence"] = jsonData
-                    
+
     elif msg.topic == Cfg["BleTrackerSyncTopic"]:
         logPrint(0, f'Startup sync requested by: {jsonData["node"]}')
         PublishDeviceAvailability(forcePublish = True)
@@ -283,9 +299,9 @@ def mqtt_on_message(client, userdata, msg):
 
 def device_found(device: BLEDevice, advData: AdvertisementData):
     """
-    
+
     Decode iBeacon, and update internal structures until publish.
-    
+
     """
     global Cfg
     DeviceList = Cfg["uuids"]
@@ -298,8 +314,8 @@ def device_found(device: BLEDevice, advData: AdvertisementData):
         if uuidAsString in DeviceList.keys() :
             DeviceList[uuidAsString]["last_seen"] = now
             DeviceList[uuidAsString]["rssi"] = advData.rssi
-            logPrint(3, f'Beacon: {DeviceList[uuidAsString]["myId"]}, Rssi: {advData.rssi}')            
-            
+            logPrint(3, f'Beacon: {DeviceList[uuidAsString]["myId"]}, Rssi: {advData.rssi}')
+
     except KeyError:
         # Apple company ID (0x004c) not found
         if advData.local_name is not None:
@@ -317,36 +333,18 @@ def device_found(device: BLEDevice, advData: AdvertisementData):
 
 def mqtt_on_connect(client, userdata, flags, rc, properties):
     """
-    Once we're connected, initialize datastructure for Devices, 
+    Once we're connected, initialize datastructure for Devices,
     and publish the /config topic for each monitored device.
-    
+
     """
     global Cfg
     if rc == 0:
         logPrint(0, "Connected to MQTT Broker!")
-        publishMqttDeviceConfig()    
+        publishMqttDeviceConfig()
     else:
         logPrint(0, f"Failed to connect, return code {rc}\n")
         exit(1)
 
-
-
-async def bleScanner():
-    """
-    
-    BLE Scanning Loop
-    
-    """
-    global Cfg
-    
-    BleScanningInterval = int(Cfg["initialScanDelay"])
-    scanner = BleakScanner(detection_callback=device_found)
-    while True:
-        await scanner.start()
-        await asyncio.sleep(BleScanningInterval)
-        await scanner.stop()
-        PublishDeviceAvailability() ### TQ-TODO: Move this into another "thread"?
-        BleScanningInterval = Cfg["scanDelay"]
 
 
 
@@ -367,25 +365,25 @@ def timeToTerminate():
 
           #logPrint(1, f'Zero out retained value for: {deviceTopic + "/state"}')
           #mqttClient.publish(deviceTopic + "/state", "", qos=1, retain=True)
-          #mqttClient.publish(deviceTopic + "/presence", "", qos=1, retain=True) 
-          
+          #mqttClient.publish(deviceTopic + "/presence", "", qos=1, retain=True)
+
           logPrint(1, f'Reset Topics for device: [{devId}]')
           mqttClient.publish(deviceTopic + "/state", "not_home", qos=1, retain=True)
-          mqttClient.publish(deviceTopic + "/presence", '{ "location" : null }', qos=1, retain=True) 
+          mqttClient.publish(deviceTopic + "/presence", '{ "location" : null }', qos=1, retain=True)
         else:
             logPrint(1, f'Skipping dev: [{devId}], Owner: {currentOwner}')
-            
+
     sys.exit(0)
 
 def handle_signal(signum, frame):
     """
-    
+
     Signal Handler
-    
+
     """
     global Cfg
     Devices = Cfg["uuids"]
-    
+
     if signum in (signal.SIGTERM, signal.SIGINT):
         logPrint(0, f"\nReceived signal {signum}, time to die")
     elif signum == signal.SIGHUP:
@@ -401,12 +399,12 @@ def handle_signal(signum, frame):
         logPrint(0, f"\nReceived UNEXPECTED signal {signum}!")
 
     timeToTerminate()
-    
+
 def populateDevDict():
-    
+
     global Cfg
     neverTime = datetime(1970, 1, 1)
-    
+
     for devUuid, devItem in Cfg["uuids"].items():
         devItem["myId"] = devItem["name"].replace(" ", "_")
         devItem["state"] = "not_home"
@@ -415,7 +413,7 @@ def populateDevDict():
         devItem["rssi"] = -1000
         devItem["presence"] = { "location" : None }
         logPrint(1, f'Configured Device: {devItem["myId"]}, uuid: {devUuid}')
-    
+
     logPrint(1, f'Device data initialized, {len(Cfg["uuids"])} devices')
 
 
@@ -424,7 +422,7 @@ def mqttInit():
     ### TQ-TODO: TLS
     global Cfg, LastPublishTime, mqttClient
     LastPublishTime = datetime.now()
-    
+
     mqttClient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                              client_id="BleTracker_" + Cfg["NodeName"],
                              transport="tcp", protocol=mqtt.MQTTv5)
@@ -434,15 +432,15 @@ def mqttInit():
     if  len(userName) > 0 and len(userPass) > 0 :
         logPrint(3, f'Will authenticate as user: {userName}')
         mqttClient.username_pw_set(userName, userPass)
-    else: 
+    else:
         logPrint(3, f'Will skip user authentication, user and/or pass zero')
 
     if Cfg["mqtt_tls"] :
         logPrint(0, f'Enabling TLS')
-        sslCtx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) 
-        sslCtx.minimum_version = ssl.TLSVersion.TLSv1_2   
-        sslCtx.check_hostname = True                      
-        sslCtx.verify_mode = ssl.CERT_REQUIRED   
+        sslCtx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        sslCtx.minimum_version = ssl.TLSVersion.TLSv1_2
+        sslCtx.check_hostname = True
+        sslCtx.verify_mode = ssl.CERT_REQUIRED
         sslCtx.load_verify_locations(cafile=Cfg["ca_cert"])
         mqttClient.tls_set_context(sslCtx)
 
@@ -458,15 +456,15 @@ def mqttInit():
 
 def publishMqttDeviceConfig():
     """
-    
+
     Publish Device Config according to HA Device Discovery Format
-    
+
     """
     global Cfg, mqttClient
     ### TQ-TODO: Skip publish if it already exists?
     for devUuid, devItem in Cfg["uuids"].items():
 
-        deviceTopic = Cfg["BaseDevTrackTopic"] + devItem["name"].replace(" ", "_")            
+        deviceTopic = Cfg["BaseDevTrackTopic"] + devItem["name"].replace(" ", "_")
         mqttPayload = dict()
         mqttPayload["state_topic"] = deviceTopic + "/state"
         mqttPayload["json_attributes_topic"] = deviceTopic + "/attrs"
@@ -479,19 +477,19 @@ def publishMqttDeviceConfig():
         logPrint(1, f'\nPublishing Device Config: {devItem["name"]}')
         logPrint(4, f'Device details:\n {json.dumps(mqttPayload,indent=2)}')
         mqttClient.publish(deviceTopic + "/config",json.dumps(mqttPayload), qos=1, retain=True)
-        
+
         mqttClient.subscribe(deviceTopic + "/presence", options=mqtt.SubscribeOptions(qos=1,noLocal=True))
         mqttClient.subscribe(Cfg["BleTrackerSyncTopic"], options=mqtt.SubscribeOptions(qos=1,noLocal=True))
         logPrint(1, f'Subscribing for Topics:', deviceTopic + "/presence", ", ", Cfg["BleTrackerSyncTopic"])
-        
+
         mqttClient.publish(Cfg["BleTrackerTopic"],"online", qos=1) ### TQ-TODO Add /config section for BLE trackers.
         syncPayload = { "node": Cfg["NodeName"] }
         mqttClient.publish(Cfg["BleTrackerSyncTopic"],json.dumps(syncPayload), qos=1) ### TQ-TODO Add /config section for BLE trackers.
-    
+
 def resetRetainedMqtt():
     global Cfg
     Devices = Cfg["uuids"]
-    
+
     for devItem in Devices.values():
         devId = devItem["myId"]
         logPrint(3, f"\nPublishDebug: {json.dumps(devItem, indent=2, default=str)}\n")
@@ -501,10 +499,10 @@ def resetRetainedMqtt():
 
         logPrint(1, f'ForcePublish Topics for device: {devItem["myId"]}')
         publish.single(deviceTopic + "/presence", '{ "location" : null }', qos=1, retain=True,
-                       client_id="BleTrackerInit-" + Cfg["NodeName"],           
-                       hostname=Cfg["mqtt_host"], port=Cfg["mqtt_port"], keepalive=5) 
+                       client_id="BleTrackerInit-" + Cfg["NodeName"],
+                       hostname=Cfg["mqtt_host"], port=Cfg["mqtt_port"], keepalive=5)
                        ###TQ-TODO: TLS+AUTH #auth = {"username": "", "password" : ""}
-      
+
 def createArgParser():
     cli = argparse.ArgumentParser(
             prog="Ble Mobile Scanner",
@@ -519,16 +517,53 @@ def createArgParser():
     loggingDebug.add_argument("--quiet", "-q", help="Reduce verbosity", action='count', default=0)
 
     return cli
+
+async def publishToMqtt():
+    """
+    State Publishing Loop
+    """
+    global Cfg
+
+    publish_interval = int(Cfg["initialScanDelay"]) - 5
+    sleep(5)
+    logPrint(0, f'\nStarting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')    
+    while True:
+        await asyncio.sleep(publish_interval)
+        PublishDeviceAvailability()
+        # optionally update the interval if it can change at runtime
+        publish_interval = Cfg["publishInterval"]
+
+async def bleScanner():
+    """
+    BLE Scanning Loop
+    """
+    global Cfg
+    scanningInterval = int(Cfg["initialScanDelay"])
     
+    logPrint(0, f'\nStarting BLE Scanner with {len(Cfg["uuids"])} devices. Inital delay: {scanningInterval}s')    
+    scanner = BleakScanner(detection_callback=device_found)
+    while True:
+        await scanner.start()
+        await asyncio.sleep(scanningInterval)
+        await scanner.stop()
+        scanningInterval = Cfg["scanDelay"]
+
+async def startAsyncTasks():
+
+    scanner_task = asyncio.create_task(bleScanner())
+    publisher_task = asyncio.create_task(publishToMqtt())
+
+    await asyncio.gather(scanner_task, publisher_task)
+
+
 def main(argv = None):
     global Cfg, mqttClient
 
-    Cfg = { "log_level" : 0 }  # Before config is read, so logPrint works
     cliArgs = createArgParser()
     args = cliArgs.parse_args()
 
     configFile = readConfig(args.file)
-    
+
     try:
         readCfg = json.loads(configFile)
     except Exception as e:
@@ -537,31 +572,31 @@ def main(argv = None):
         exit(1)
 
     Cfg = dict({ "log_level" : 0 }) | dict(readCfg)
-    
+
     validateConfiguration()
     logPrint(2, f"ArgsDebug: {args}")
     Cfg["log_level"] = args.verbose - args.quiet
-    
+
     tempConfig = dict(Cfg)
     tempConfig["mqtt_pass"] = "<>"
     logPrint(2, f"Running Configuration:\n {json.dumps(tempConfig, indent=2, default=str)}")
-    
-    logPrint(0, f'Continuing with LogLevel: {Cfg["log_level"]}')
+
+    logPrint(0, f'Continuing with LogLevel: {Cfg["log_level"]}, version {ScriptVersion}')
     atexit.register(timeToTerminate)
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, handle_signal)
 
     populateDevDict()
-    
+
     if args.fixRetained :
         # Try to fix issues with retained mqtt topic data
-        logPrint(0, "Will - ONLY - Init Devices") 
+        logPrint(0, "Will - ONLY - Init Devices")
         resetRetainedMqtt()
         exit(0)
-    
+
     mqttInit()
-    logPrint(0, f'\nStarting BLE Scanner with {len(Cfg["uuids"])} devices configured')
-    asyncio.run(bleScanner())
+
+    asyncio.run(startAsyncTasks())
     mqttClient.disconnect()
 
 if __name__ == "__main__":
