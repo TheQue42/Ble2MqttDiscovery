@@ -9,7 +9,9 @@ http://koen.vervloesem.eu/blog/decoding-bluetooth-low-energy-advertisements-with
 TQ-TODO: LOCALTIME, NOT UTC:
 TQ-TODO: Check impact of using Message Expiry Interval?
 TQ-TODO: Republish/Subscribe to Config part?
-TQ-TODO: When we've seen a node, but no new updates are received....suspect problems?
+
+TQ_TODO: Log-level bugs, mismatch between CLI -v and .json config
+
 """
 
 import asyncio, re, json, signal, sys, argparse,socket
@@ -39,7 +41,7 @@ ibeacon_format = Struct(
     "power" / Int8sl,
 )
 
-ScriptVersion="0.3.3"
+ScriptVersion="0.3.4"
 LastPublishTime = None
 Devices = None
 mqttClient = mqtt.Client
@@ -126,7 +128,7 @@ def lastPublishTime(lastTime : datetime):
 def logPrint(level, *args, **kwargs):
     """Centralize log-output, until we get a real logging API"""
     global Cfg
-    
+
     LogLevel = Cfg["log_level"]
     if LogFileHandle is not None and level <= LogLevel:
         print(*args, file=LogFileHandle, **kwargs)
@@ -145,7 +147,7 @@ def PublishDeviceAvailability(forcePublish: bool = False):
 
     """
     global Cfg
-    
+
     logPrint(3, f'\nPublishLoop: DeviceCount: {len(Cfg["uuids"])}')
     for devItem in Cfg["uuids"].values():
         logPrint(3, f'- Name: {devItem["myId"]:<25} - [{devItem["state"]:^8}] @ {devItem["presence"]["location"]}')
@@ -165,7 +167,7 @@ def PublishDeviceAvailability(forcePublish: bool = False):
         currentOwner = devItem["presence"]["location"]
         takeOwnerShip = False
         if currentOwner != Cfg["NodeName"] and currentOwner is not None:
-            
+
             if deviceAway :
                 logPrint(3, f'[{devName}] managed by [{currentOwner}], and we havent seen it. Lets not touch.')
                 return
@@ -189,8 +191,8 @@ def PublishDeviceAvailability(forcePublish: bool = False):
         elif currentOwner is None and not deviceAway:
             logPrint(0, f'TAKING OWNERSHIP of [{devName}], No Master.')
             takeOwnerShip = True
-        
-        
+
+
         if deviceAway:
             if devItem["state"] == "home":
                 logPrint(0, f'\n{devName} ==> Away! LastSeen: [{last_seen}]')
@@ -205,7 +207,7 @@ def PublishDeviceAvailability(forcePublish: bool = False):
             timeToPublish = (now - last_published > timedelta(seconds=minPublishInterval))
 
         logPrint(3, f'CHECK: {devName}, deviceAway:{deviceAway}, Own:{currentOwner}, TTP: {timeToPublish}, takeOw: {takeOwnerShip}, \nPresence:{devItem["presence"]}\n')
-        
+
         # Publish DeviceTracker State?
         rssiIfHome = "" if deviceAway else ":" + f'{devItem["rssi"]}'
         if timeToPublish or takeOwnerShip or (forcePublish and not deviceAway):
@@ -249,6 +251,7 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
     attributes = dict()
     attributes["rssi"] = devItem["rssi"]
     attributes["owner"] = mqttPayload["location"]
+    attributes["nodeVersion"] = ScriptVersion
     mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
     mqttClient.publish(deviceTopic + "/presence", json.dumps(mqttPayload), qos=1, retain=True, properties=props)
 
@@ -526,7 +529,7 @@ async def publishToMqtt():
 
     publish_interval = int(Cfg["initialScanDelay"]) - 5
     sleep(5)
-    logPrint(0, f'\nStarting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')    
+    logPrint(0, f'\nStarting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')
     while True:
         await asyncio.sleep(publish_interval)
         PublishDeviceAvailability()
@@ -539,8 +542,8 @@ async def bleScanner():
     """
     global Cfg
     scanningInterval = int(Cfg["initialScanDelay"])
-    
-    logPrint(0, f'\nStarting BLE Scanner with {len(Cfg["uuids"])} devices. Inital delay: {scanningInterval}s')    
+
+    logPrint(0, f'\nStarting BLE Scanner with {len(Cfg["uuids"])} devices. Inital delay: {scanningInterval}s')
     scanner = BleakScanner(detection_callback=device_found)
     while True:
         await scanner.start()
