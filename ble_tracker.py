@@ -223,7 +223,7 @@ def PublishDeviceAvailability(forcePublish: bool = False):
         # Publish BleTracker Presence Info
         #
 
-def publishDevice(devItem : dict, takeOwnerShip : bool):
+def publishDevice(devItem : dict, takeOwnerShip : bool): # TQ-TODO: Check TakeOwnerShip?
     """
         Publish a single client state and presence info
     """
@@ -264,16 +264,22 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
         presencePayload = { "location" : None }
         logPrint(1, f'AwayPublish PRESENCE: [{devItem["myId"]}]')
         mqttClient.publish(deviceTopic + "/presence", json.dumps(presencePayload), qos=1, retain=True, properties=props)
-        #mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
-        
-        sleep(1.0)
-        #await asyncio.sleep(1.0)
-        #
-        # We should have a way of detecting if we SHOULD SKIP to publish this!
+
+        # Will publish AWAY, providing owner doesnt change to some other node here.
+        asyncio.run(main())
+
+async def publishDeviceStateAway(devItem : dict):
+    """
+    """
+    await asyncio.sleep(1.0)
+    currentOwner = devItem["presence"]["location"]
+    if currentOwner != Cfg["NodeName"] and currentOwner is not None:
+        logPrint(1,'RELEASED ownership for [{devItem["myId"]}] to: [{currentOwner}]')
+    else:
         # Away/Home state
         logPrint(1, f'AwayPublish PRESENCE: [{devItem["myId"]}], [{devItem["presence"]["location"]}]')
         mqttClient.publish(deviceTopic + "/state", devState, qos=1, retain=True, properties=props)
-
+    
 
 
 def mqtt_on_message(client, userdata, msg):
