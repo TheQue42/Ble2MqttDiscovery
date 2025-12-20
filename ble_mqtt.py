@@ -244,7 +244,6 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
         presencePayload["rssi"] = devItem["rssi"]
         presencePayload["lastUpdate"] = datetime.now().timestamp()
         presencePayload["nodeVersion"] = ScriptVersion
-        presencePayload["last_seen"] = round( (datetime.now() - devItem["last_seen"] ).total_seconds(), 0 )
 
         attributes["rssi"] = devItem["rssi"]
         attributes["owner"] = presencePayload["location"]
