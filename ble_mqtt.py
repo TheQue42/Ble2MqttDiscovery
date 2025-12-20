@@ -41,7 +41,7 @@ ibeacon_format = Struct(
     "power" / Int8sl,
 )
 
-ScriptVersion="0.3.4"
+ScriptVersion="0.3.5"
 LastPublishTime = None
 Devices = None
 mqttClient = mqtt.Client
@@ -235,25 +235,46 @@ def publishDevice(devItem : dict, takeOwnerShip : bool):
     deviceTopic = Cfg["BaseDevTrackTopic"] + devItem["myId"]
     devState = devItem["state"]
 
-    # Always publish away/home state
-    mqttClient.publish(deviceTopic + "/state", devState, qos=1, retain=True, properties=props)
+    presencePayload = dict() ### TQ-SHOULD-WE MERGE THESE?
+    attributes = dict() ### TQ-SHOULD-WE MERGE THESE?
+    
 
-    mqttPayload = { "location" : None }
     if devState == "home":
-        mqttPayload["location"] = Cfg["NodeName"]
-        mqttPayload["rssi"] = devItem["rssi"]
-        mqttPayload["lastUpdate"] = datetime.now().timestamp()
-        mqttPayload["nodeVersion"] = ScriptVersion
-        lastSeenSeconds = round( (datetime.now() - devItem["last_seen"] ).total_seconds(), 0 )
-        mqttPayload["last_seen"] = lastSeenSeconds
-        devItem["presence"] = mqttPayload
+        presencePayload["location"] = Cfg["NodeName"]
+        presencePayload["rssi"] = devItem["rssi"]
+        presencePayload["lastUpdate"] = datetime.now().timestamp()
+        presencePayload["nodeVersion"] = ScriptVersion
+        presencePayload["last_seen"] = round( (datetime.now() - devItem["last_seen"] ).total_seconds(), 0 )
 
-    attributes = dict()
-    attributes["rssi"] = devItem["rssi"]
-    attributes["owner"] = mqttPayload["location"]
-    attributes["nodeVersion"] = ScriptVersion
-    mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
-    mqttClient.publish(deviceTopic + "/presence", json.dumps(mqttPayload), qos=1, retain=True, properties=props)
+        attributes["rssi"] = devItem["rssi"]
+        attributes["owner"] = presencePayload["location"]
+        attributes["nodeVersion"] = ScriptVersion
+
+        devItem["presence"] = presencePayload
+
+        # Away/Home state
+        mqttClient.publish(deviceTopic + "/state", devState, qos=1, retain=True, properties=props)
+        
+        # Presence/Owner State For Other MqttInstances
+        mqttClient.publish(deviceTopic + "/presence", json.dumps(presencePayload), qos=1, retain=True, properties=props)
+        
+        # Attribute State For HA
+        # mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
+        
+    else:
+        presencePayload = { "location" : None }
+        logPrint(1, f'AwayPublish PRESENCE: [{devItem["myId"]}]')
+        mqttClient.publish(deviceTopic + "/presence", json.dumps(presencePayload), qos=1, retain=True, properties=props)
+        #mqttClient.publish(deviceTopic + "/attrs", json.dumps(attributes), qos=1, retain=True, properties=props)
+        
+        sleep(1.0)
+        #await asyncio.sleep(1.0)
+        #
+        # We should have a way of detecting if we SHOULD SKIP to publish this!
+        # Away/Home state
+        logPrint(1, f'AwayPublish PRESENCE: [{devItem["myId"]}], [{devItem["presence"]["location"]}]')
+        mqttClient.publish(deviceTopic + "/state", devState, qos=1, retain=True, properties=props)
+
 
 
 def mqtt_on_message(client, userdata, msg):
@@ -470,7 +491,7 @@ def publishMqttDeviceConfig():
         deviceTopic = Cfg["BaseDevTrackTopic"] + devItem["name"].replace(" ", "_")
         mqttPayload = dict()
         mqttPayload["state_topic"] = deviceTopic + "/state"
-        mqttPayload["json_attributes_topic"] = deviceTopic + "/attrs"
+        mqttPayload["json_attributes_topic"] = deviceTopic + "/presence"
         mqttPayload["payload_home"] = "home"
         mqttPayload["payload_not_home"] = "not_home"
         mqttPayload["unique_id"] = devUuid

@@ -6,7 +6,7 @@ After=multi-user.target
 Type=simple
 #Restart=always
 Restart=on-failure
-ExecStart=/root/repos/Ble2MqttDiscovery/py3/bin/python3 -u /root/repos/Ble2MqttDiscovery/ble_mqtt.py -f /etc/ble_tracker.json
+ExecStart=/root/repos/Ble2MqttDiscovery/py3/bin/python3 -u /root/repos/Ble2MqttDiscovery/ble_mqtt.py -f /etc/ble_tracker.json -v
 StandardOutput=journal
 
 [Install]
