@@ -11,6 +11,8 @@ TQ-TODO: Check impact of using Message Expiry Interval?
 TQ-TODO: Republish/Subscribe to Config part?
 
 TQ_TODO: Log-level bugs, mismatch between CLI -v and .json config
+TQ_TODO: Fail on mqtt auth failure
+###TQ-TODO: Disable MQTT-JustScan
 
 """
 
