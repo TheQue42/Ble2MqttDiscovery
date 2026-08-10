@@ -45,7 +45,7 @@ ibeacon_format = Struct(
 
 #18:44:44.101787 - GIZMO : NonBLE   : Bose QC Ultra 2 Earbuds / Mac: 76:27:DB:37:38:84 / (-89) dBm
 
-ScriptVersion="0.4.4"
+ScriptVersion="0.4.5"
 LastPublishTime = None
 Devices = None
 mqttClient = mqtt.Client
@@ -95,7 +95,7 @@ def validateConfiguration():
         "mqtt_pass" : "",
         "mqtt_tls" : False,
         "mqtt_keepalive" : 180,
-        "awayTimeout" : 90,
+        "awayTimeout" : 120,
         "publishInterval" : 60,
         "initialScanDelay" : 20,
         "bleScanningInterval" : 10,
@@ -161,7 +161,7 @@ async def PublishDeviceAvailability(forcePublish: bool = False):
 
     logPrint(3, f'PublishLoop: DeviceCount: {len(Cfg["uuids"])} ---------------------------')
     for devItem in Cfg["uuids"].values():
-        logPrint(3, f'- Name: {devItem["myId"]:<25} - [{devItem["state"]:^8}] @ {devItem["presence"]["location"]}')
+        logPrint(3, f'- Name: {devItem["myId"]:<25} - [{devItem["state"]:^8}] @ {devItem["presence"]}')
     else:
         logPrint(3,"-------------------------------------------------------")
     minPublishInterval = Cfg["publishInterval"]
@@ -202,7 +202,9 @@ async def PublishDeviceAvailability(forcePublish: bool = False):
         elif currentOwner is None and not deviceAway:
             logPrint(0, f'TAKING OWNERSHIP of [{devName}], No Master.')
             takeOwnerShip = True
-
+        elif not deviceAway:
+            partialPresence = {k: devItem["presence"][k] for k in ["location", "rssi"] if k in devItem["presence"]}
+            logPrint(3, f'We already own: {devName}, @{partialPresence}: tDlt: {now - last_seen}')
 
         if deviceAway:
             # Did we already know that?
@@ -220,7 +222,7 @@ async def PublishDeviceAvailability(forcePublish: bool = False):
             timeToPublish = (now - last_published > timedelta(seconds=minPublishInterval))
         partialPresence = {k: devItem["presence"][k] for k in ["location", "rssi"] if k in devItem["presence"]}
 
-        logPrint(3, f'Pre: {devName}, Aw:{deviceAway}, @:{currentOwner}, T2P: {timeToPublish}, takeOw: {takeOwnerShip}, P:{partialPresence}')
+        logPrint(3, f'Pre: {devName}, Awy:{deviceAway}, @{currentOwner}, T2P:{timeToPublish}, takeOw:{takeOwnerShip}, P:{partialPresence}')
 
         # Publish DeviceTracker State?
         rssiIfHome = "" if deviceAway else ":" + f'{devItem["rssi"]}'
@@ -242,7 +244,6 @@ async def publishDevice(devItem : dict, takeOwnerShip : bool): # TQ-TODO: Check 
         Publish a single client state and presence info
     """
     global Cfg, mqttClient
-
 
     presencePayload = dict() ### TQ-SHOULD-WE MERGE THESE?
     attributes = dict() ### TQ-SHOULD-WE MERGE THESE?
@@ -278,9 +279,7 @@ async def publishDeviceState(devItem : dict, takeOwner : bool):
     """
 
     if not takeOwner:
-        logPrint(1, f'ASyncSleep1: [{devItem["myId"]}], takeOwner:[{takeOwner}]')
         sleep(2.0)
-        logPrint(1, f'ASyncSleep2: [{devItem["myId"]}], takeOwner:[{takeOwner}]')
     currentOwner = devItem["presence"]["location"]
     if currentOwner != SystemName and currentOwner is not None:
         logPrint(1,f'RELEASED ownership for [{devItem["myId"]}] to: [{currentOwner}]')
@@ -578,12 +577,13 @@ async def publishToMqtt():
 
     publish_interval = int(Cfg["initialScanDelay"]) - 5
     sleep(5)
-    logPrint(0, f'\nStarting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')
+    logPrint(0, f'Starting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')
     while True:
         await asyncio.sleep(publish_interval)
         await PublishDeviceAvailability()
         # optionally update the interval if it can change at runtime
-        publish_interval = Cfg["publishInterval"]
+        publish_interval = 10
+        #logPrint(3, f'PublishLoop: Delay: {publish_interval}s')
 
 
 async def bleScanner():
@@ -593,7 +593,7 @@ async def bleScanner():
     global Cfg
     scanningInterval = int(Cfg["initialScanDelay"])
 
-    logPrint(0, f'\nStarting BLE Scanner with {len(Cfg["uuids"])} devices. Inital delay: {scanningInterval}s')
+    logPrint(0, f'Starting BLE Scanner with {len(Cfg["uuids"])} devices. Inital delay: {scanningInterval}s')
     scanner = BleakScanner(detection_callback=BleDeviceFound)
     while True:
         await scanner.start()
