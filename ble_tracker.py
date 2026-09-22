@@ -54,6 +54,7 @@ Cfg = { "log_level" : 0 }  # Before config is read, so logPrint works
 SystemName = socket.gethostname().split('.')[0]
 MqttProps = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
 ForceTraceBeacons = False
+HaRunningState = "Unknown"
 
 def logPrint(level, *args, **kwargs):
     """Centralize log-output, until we get a real logging API"""
@@ -297,6 +298,17 @@ def mqtt_on_message(client, userdata, msg):
     messages published by other instances than this system.
     """
     global Cfg
+    
+    if msg.topic == "homeassistant/status":
+        HaRunningState = msg.payload.decode()
+        if HaRunningState != "online":
+            logPrint(0, f'HA instance is OFFLINE ({HaRunningState})')
+        else:
+            logPrint(0, f'HA instance is BACK! ({HaRunningState})')
+            # We need to reInit?
+            #mqttInit()
+        return
+    
     deviceName = msg.topic.replace(Cfg["BaseDevTrackTopic"], "").replace("/presence", "")
     try:
         jsonData = json.loads(msg.payload.decode())
@@ -541,6 +553,10 @@ def publishMqttDeviceConfig():
         mqttClient.publish(Cfg["BleTrackerTopic"],"online", qos=1) ### TQ-TODO Add /config section for BLE trackers.
         syncPayload = { "node": SystemName }
         mqttClient.publish(Cfg["BleTrackerSyncTopic"],json.dumps(syncPayload), qos=1) ### TQ-TODO Add /config section for BLE trackers.
+
+    logPrint(0, "Device Config Done")
+
+    mqttClient.subscribe("homeassistant/status", options=mqtt.SubscribeOptions(qos=2,noLocal=True))
 
 def resetRetainedMqtt():
     global Cfg
