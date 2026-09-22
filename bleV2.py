@@ -14,6 +14,7 @@ TQ_TODO: Log-level bugs, mismatch between CLI -v and .json config
 TQ_TODO: Fail on mqtt auth failure
 ###TQ-TODO: Disable MQTT-JustScan
 
+### homeassistant/status == Offline / Online
 """
 
 import asyncio, json, signal, sys, argparse,socket
@@ -45,11 +46,12 @@ ibeacon_format = Struct(
 
 #18:44:44.101787 - GIZMO : NonBLE   : Bose QC Ultra 2 Earbuds / Mac: 76:27:DB:37:38:84 / (-89) dBm
 
-ScriptVersion="0.4.6"
+ScriptVersion="0.4.5"
 LastPublishTime = None
 Devices = None
 mqttClient = mqtt.Client
 LogFileHandle = None # Not Impl
+HaRunningState = "Unknown"
 Cfg = { "log_level" : 0 }  # Before config is read, so logPrint works
 SystemName = socket.gethostname().split('.')[0]
 MqttProps = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
@@ -291,12 +293,26 @@ async def publishDeviceState(devItem : dict, takeOwner : bool):
 
 
 
-def mqtt_on_message(client, userdata, msg):
+def onMqttMessage(client, userdata, msg):
     """
     Handle messages received on subscriptions, which *should* only be
     messages published by other instances than this system.
+    
+    But we also have the HA status value
     """
-    global Cfg
+    global Cfg, HaRunningState
+    
+    logPrint(5, f"OnMqttMessage() - Topic: [{msg.topic}]")
+    if msg.topic == "homeassistant/status":
+        HaRunningState = msg.payload.decode()
+        if HaRunningState != "online":
+            logPrint(0, f'HA instance is OFFLINE ({HaRunningState})')
+        else:
+            logPrint(0, f'HA instance is BACK! ({HaRunningState})')
+            # We need to reInit?
+            #mqttInit()
+        return
+    
     deviceName = msg.topic.replace(Cfg["BaseDevTrackTopic"], "").replace("/presence", "")
     try:
         jsonData = json.loads(msg.payload.decode())
@@ -379,22 +395,6 @@ def BleDeviceFound(device: BLEDevice, advData: AdvertisementData):
         logPrint(0, f'BLE Scanner Exception: {e}')
         sleep(1)
 
-def mqtt_on_connect(client, userdata, flags, rc, properties):
-    """
-    Once we're connected, initialize datastructure for Devices,
-    and publish the /config topic for each monitored device.
-
-    """
-    global Cfg
-    if rc == 0:
-        logPrint(0, "Connected to MQTT Broker!")
-        publishMqttDeviceConfig()
-    else:
-        logPrint(0, f"Failed to connect, return code {rc}\n")
-        exit(1)
-
-
-
 
 def timeToTerminate():
     """
@@ -415,7 +415,7 @@ def timeToTerminate():
           #mqttClient.publish(deviceTopic + "/state", "", qos=1, retain=True)
           #mqttClient.publish(deviceTopic + "/presence", "", qos=1, retain=True)
 
-          logPrint(1, f'Reset Topics for device: [{devId}]')
+          logPrint(1, f'Reset Topics for owned device: [{devId}]')
           mqttClient.publish(deviceTopic + "/state", "not_home", qos=1, retain=True)
           mqttClient.publish(deviceTopic + "/presence", '{ "location" : null }', qos=1, retain=True)
         else:
@@ -465,19 +465,39 @@ def populateDevDict():
     logPrint(1, f'Device data initialized, {len(Cfg["uuids"])} devices')
 
 
+def onMqttConnect(client, userdata, flags, rc, properties):
+    """
+    Once we're connected, initialize datastructure for Devices,
+    and publish the /config topic for each monitored device.
+
+    """
+    global Cfg, mqttClient
+    
+    if rc == 0:
+        logPrint(0, f"Connected to MQTT Broker (Rc: {rc}, Flags: {flags})")
+        publishMqttDeviceConfig()
+    else:
+        logPrint(0, f"Failed to connect, return code {rc}\n")
+        mqttClient.disconnect()
+        mqttClient.loop_stop()
+        sys.exit(-42)
+
 def onMqttFailure(client, userdata, flags, rc, properties):
     """
     ConnFail
     """
     global mqttClient
-    logPrint(0, f"MQTT Disconnection! Flags: [{flags}] Reason: [{rc}]")
-
+    logPrint(0, f"MQTT Disconnection! Flags: {flags} Reason: {rc}")
+    mqttClient.disconnect()
+    mqttClient.loop_stop()
+    sys.exit(-42)
+    
 def mqttInit():
 
     ### TQ-TODO: TLS
     global Cfg, LastPublishTime, mqttClient
     LastPublishTime = datetime.now()
-
+    logPrint(2, f'MQTT Init at: {LastPublishTime}')
     mqttClient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                              client_id="BleTracker_" + SystemName,
                              transport="tcp", protocol=mqtt.MQTTv5)
@@ -491,7 +511,7 @@ def mqttInit():
         logPrint(3, f'Will skip user authentication, user and/or pass zero')
 
     if Cfg["mqtt_tls"] :
-        logPrint(0, f'Enabling TLS')
+        logPrint(0, f'Enabling MQTT TLS')
         sslCtx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         sslCtx.minimum_version = ssl.TLSVersion.TLSv1_2
         sslCtx.check_hostname = True
@@ -499,15 +519,15 @@ def mqttInit():
         sslCtx.load_verify_locations(cafile=Cfg["ca_cert"], capath="/etc/ssl")
         mqttClient.tls_set_context(sslCtx)
 
-    mqttClient.on_connect = mqtt_on_connect
-    mqttClient.on_message = mqtt_on_message
+    mqttClient.on_connect = onMqttConnect
+    mqttClient.on_message = onMqttMessage
     mqttClient.on_disconnect = onMqttFailure
     mqttClient.will_set( topic=Cfg["BleTrackerTopic"],payload="offline", qos=1, retain=True)
+    
+    logPrint(0, f'Connecting to MQTT Server: {Cfg["mqtt_host"]}')
+    mqttClient.connect_async(Cfg["mqtt_host"], port=Cfg["mqtt_port"], keepalive=Cfg["mqtt_keepalive"], clean_start=mqtt.MQTT_CLEAN_START_FIRST_ONLY)
     mqttClient.loop_start()
-    mqttClient.connect(Cfg["mqtt_host"], port=Cfg["mqtt_port"], keepalive=Cfg["mqtt_keepalive"], clean_start=mqtt.MQTT_CLEAN_START_FIRST_ONLY)
-    sleep(2)
-
-
+    
 
 
 def publishMqttDeviceConfig():
@@ -530,7 +550,7 @@ def publishMqttDeviceConfig():
         mqttPayload["source_type"] = "bluetooth_le"
         mqttPayload["name"] = devItem["name"].replace(" BLE", "")
 
-        logPrint(1, f'\nPublishing Device Config: {devItem["name"]}')
+        logPrint(1, f'Publishing Device Config: [{devItem["name"]}]')
         logPrint(4, f'Device details:\n {json.dumps(mqttPayload,indent=2)}')
         mqttClient.publish(deviceTopic + "/config",json.dumps(mqttPayload), qos=1, retain=True)
 
@@ -541,6 +561,15 @@ def publishMqttDeviceConfig():
         mqttClient.publish(Cfg["BleTrackerTopic"],"online", qos=1) ### TQ-TODO Add /config section for BLE trackers.
         syncPayload = { "node": SystemName }
         mqttClient.publish(Cfg["BleTrackerSyncTopic"],json.dumps(syncPayload), qos=1) ### TQ-TODO Add /config section for BLE trackers.
+    
+    logPrint(0, "Device Config Done")
+
+    try: 
+        mqttClient.subscribe("homeassistant/status", options=mqtt.SubscribeOptions(qos=2,noLocal=True))
+    except Exception as e:
+        logPrint(0, f"Error: Bad Suscribe: {e}")
+    
+    logPrint(0, "HA Status Subscribed")
 
 def resetRetainedMqtt():
     global Cfg
@@ -584,8 +613,8 @@ async def publishToMqtt():
     global Cfg
 
     publish_interval = int(Cfg["initialScanDelay"]) - 5
-    sleep(5)
     logPrint(0, f'Starting PublishLoop with {len(Cfg["uuids"])} devices. Inital delay: {publish_interval}s')
+    sleep(5)
     while True:
         await asyncio.sleep(publish_interval)
         await PublishDeviceAvailability()
@@ -659,7 +688,7 @@ def main(argv = None):
         exit(0)
 
     mqttInit()
-
+    logPrint(0, f'Mqtt Init Completed')
     asyncio.run(startAsyncTasks())
     mqttClient.disconnect()
 
